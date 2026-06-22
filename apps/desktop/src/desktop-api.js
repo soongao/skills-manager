@@ -1,34 +1,19 @@
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 
 const isTauri = Boolean(window.__TAURI_INTERNALS__);
-
-export function detectView() {
-  const view = new URLSearchParams(window.location.search).get("view");
-  if (view) return view;
-
-  if (!isTauri) return "panel";
-
-  try {
-    return getCurrentWindow().label || "panel";
-  } catch {
-    return "panel";
-  }
-}
 
 export function createDesktopApi() {
   if (!isTauri) return createPreviewApi();
 
   return {
-    hideCurrentWindow: () => invoke("hide_current_window", {}),
     initConfig: (payload) => invoke("init_config", payload),
     loadDashboard: () => invoke("load_dashboard", {}),
     normalizeError,
-    openSettings: () => invoke("open_settings", {}),
     reconcileAll: () => invoke("reconcile", { agentId: null, plan: false }),
     remoteCliStatus: (payload) => invoke("remote_cli_status", payload),
     remoteSync: (payload) => invoke("remote_sync", payload),
     setAgentDir: (payload) => invoke("set_agent_dir", payload),
+    setLocalSource: (payload) => invoke("set_local_source", payload),
     setRemoteEnvironment: (payload) => invoke("set_remote_environment", payload),
     setRemoteSource: (payload) => invoke("set_remote_source", payload),
     setSkillEnabled: (payload) => invoke("set_skill_enabled", payload),
@@ -41,7 +26,6 @@ function createPreviewApi() {
   let dashboard = createPreviewDashboard();
 
   return {
-    hideCurrentWindow: async () => undefined,
     initConfig: async ({ sourceRoot }) => {
       dashboard = {
         ...dashboard,
@@ -61,9 +45,6 @@ function createPreviewApi() {
     },
     loadDashboard: async () => dashboard,
     normalizeError,
-    openSettings: async () => {
-      window.location.search = "view=settings";
-    },
     reconcileAll: async () => dashboard,
     remoteCliStatus: async ({ environmentId }) => ({
       remoteStatus: {
@@ -115,6 +96,32 @@ function createPreviewApi() {
       dashboard.statuses = createStatuses(dashboard.config.environments, dashboard.skills);
       return dashboard;
     },
+    setLocalSource: async ({ sourceProfileId, sourceRoot }) => {
+      const id = sourceProfileId || "local-personal";
+      dashboard.config.activeSourceProfileId = id;
+      dashboard.config.sourceProfiles = dashboard.config.sourceProfiles.filter(
+        (profile) => profile.sourceProfileId !== id,
+      );
+      dashboard.config.sourceProfiles.push({
+        kind: "local",
+        sourceProfileId: id,
+        sourceRoot,
+      });
+      dashboard.sourceRoot = sourceRoot;
+      dashboard.skills = dashboard.skills.map((skill) => ({
+        ...skill,
+        path: `${sourceRoot}/skills/${skill.skillId}`,
+      }));
+      dashboard.sourceSkills = upsertPreviewSourceSkills(dashboard.sourceSkills, {
+        kind: "local",
+        sourceProfileId: id,
+        sourceRoot,
+        skills: dashboard.skills,
+        error: null,
+      });
+      dashboard.statuses = createStatuses(dashboard.config.environments, dashboard.skills);
+      return dashboard;
+    },
     setRemoteEnvironment: async (payload) => {
       dashboard.config.environments = dashboard.config.environments.filter(
         (env) => env.environmentId !== payload.environmentId,
@@ -150,6 +157,13 @@ function createPreviewApi() {
         deleteExtraneous: payload.deleteExtraneous,
       });
       dashboard.sourceRoot = payload.localCacheRoot;
+      dashboard.sourceSkills = upsertPreviewSourceSkills(dashboard.sourceSkills, {
+        kind: "remote",
+        sourceProfileId,
+        sourceRoot: payload.localCacheRoot,
+        skills: createPreviewRemoteSkills(payload.localCacheRoot),
+        error: null,
+      });
       return dashboard;
     },
     setSkillEnabled: async ({ environmentId, agentId, skillId, enabled }) => {
@@ -235,6 +249,18 @@ function createPreviewRemoteLinkPlan(dashboard) {
   };
 }
 
+function upsertPreviewSourceSkills(sourceSkills = [], next) {
+  return [...sourceSkills.filter((source) => source.kind !== next.kind), next];
+}
+
+function createPreviewRemoteSkills(sourceRoot = "/Users/alice/.skills-manager/cache/remote-personal") {
+  return [
+    { skillId: "api-test", path: `${sourceRoot}/skills/api-test` },
+    { skillId: "release-helper", path: `${sourceRoot}/skills/release-helper` },
+    { skillId: "incident-notes", path: `${sourceRoot}/skills/incident-notes` },
+  ];
+}
+
 function createPreviewDashboard() {
   const skills = [
     { skillId: "receiving-code-review", path: "/Users/alice/.shared-skills/skills/receiving-code-review" },
@@ -242,6 +268,7 @@ function createPreviewDashboard() {
     { skillId: "skill-installer", path: "/Users/alice/.shared-skills/skills/skill-installer" },
     { skillId: "writing-great-skills", path: "/Users/alice/.shared-skills/skills/writing-great-skills" },
   ];
+  const remoteSkills = createPreviewRemoteSkills();
 
   const agents = [
     {
@@ -275,6 +302,16 @@ function createPreviewDashboard() {
           kind: "local",
           sourceProfileId: "local-personal",
           sourceRoot: "/Users/alice/.shared-skills",
+        },
+        {
+          kind: "remote",
+          sourceProfileId: "remote-personal",
+          host: "devbox",
+          user: "alice",
+          remoteSourceRoot: "/home/alice/.shared-skills",
+          localCacheRoot: "/Users/alice/.skills-manager/cache/remote-personal",
+          autoSync: false,
+          deleteExtraneous: true,
         },
       ],
       environments: [
@@ -312,6 +349,22 @@ function createPreviewDashboard() {
         recommendedSkillsDir: agent.skillsDir,
       })),
     },
+    sourceSkills: [
+      {
+        kind: "local",
+        sourceProfileId: "local-personal",
+        sourceRoot: "/Users/alice/.shared-skills",
+        skills,
+        error: null,
+      },
+      {
+        kind: "remote",
+        sourceProfileId: "remote-personal",
+        sourceRoot: "/Users/alice/.skills-manager/cache/remote-personal",
+        skills: remoteSkills,
+        error: null,
+      },
+    ],
     skills,
     statuses: createStatuses(
       [

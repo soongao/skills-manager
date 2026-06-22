@@ -1,17 +1,41 @@
 import { AGENTS } from "../constants.js";
 import { escapeAttr, escapeHtml, shortPath } from "../format.js";
 
-const SETTINGS_PAGES = [
-  ["general", "General", "Status"],
-  ["skills", "Skills", "Library"],
-  ["agents", "Agents", "Targets"],
-  ["remote", "Remote", "Sources"],
-  ["sync", "Sync", "Transport"],
-  ["advanced", "Advanced", "Hooks"],
+const SETTINGS_NAV = [
+  { id: "overview", label: "Overview", hint: "Status" },
+  {
+    id: "use-local",
+    label: "Use Local Skills",
+    hint: "This Mac as source",
+    children: [
+      { id: "local-on-this-mac", label: "On This Mac", hint: "Local agents" },
+      { id: "local-on-remote", label: "On Remote Machines", hint: "Remote agents" },
+    ],
+  },
+  {
+    id: "use-remote",
+    label: "Use Remote Skills",
+    hint: "Remote as source",
+    children: [
+      { id: "remote-source", label: "Remote Source", hint: "Source and cache" },
+      { id: "remote-on-this-mac", label: "On This Mac", hint: "Local agents" },
+    ],
+  },
+  {
+    id: "skills",
+    label: "Skills",
+    hint: "Libraries",
+    children: [
+      { id: "skills-local", label: "Local Library", hint: "Local source skills" },
+      { id: "skills-remote", label: "Remote Library", hint: "Pulled remote skills" },
+    ],
+  },
+  { id: "activity", label: "Activity", hint: "Results and conflicts" },
+  { id: "advanced", label: "Advanced", hint: "Integrations" },
 ];
 
 export function renderSettings(model, state) {
-  const page = state.settingsPage || "general";
+  const page = state.settingsPage || "overview";
 
   return `
     <section class="settings-shell mac-shell">
@@ -24,7 +48,7 @@ export function renderSettings(model, state) {
           </div>
         </div>
         <nav class="settings-nav" aria-label="Settings">
-          ${SETTINGS_PAGES.map(([id, label, hint]) => renderNavItem(id, label, hint, page)).join("")}
+          ${SETTINGS_NAV.map((item) => renderNavItem(item, page)).join("")}
         </nav>
       </aside>
 
@@ -37,7 +61,6 @@ export function renderSettings(model, state) {
           <div class="toolbar-actions">
             <span class="toolbar-state ${state.busy ? "working" : ""}">${state.busy ? "Working" : "Idle"}</span>
             <button class="mac-button" data-action="refresh" ${state.busy ? "disabled" : ""}>Refresh</button>
-            <button class="mac-button primary" data-action="reconcile-all" ${state.busy || !model.configured ? "disabled" : ""}>Apply</button>
           </div>
         </header>
 
@@ -50,167 +73,295 @@ export function renderSettings(model, state) {
   `;
 }
 
-function renderNavItem(id, label, hint, activePage) {
+function renderNavItem(item, activePage) {
+  if (item.children?.length) {
+    const active = item.children.some((child) => child.id === activePage);
+    return `
+      <section class="nav-group ${active ? "open" : ""}">
+        <div class="nav-row nav-parent ${active ? "active-parent" : ""}">
+          <span class="nav-mark">${navMark(item.id)}</span>
+          <span>
+            <strong>${escapeHtml(item.label)}</strong>
+            <small>${escapeHtml(item.hint)}</small>
+          </span>
+        </div>
+        <div class="nav-children">
+          ${item.children.map((child) => renderNavChild(child, activePage)).join("")}
+        </div>
+      </section>
+    `;
+  }
+
   return `
-    <button class="nav-row ${activePage === id ? "active" : ""}" data-action="select-settings-page" data-page="${id}" type="button">
-      <span class="nav-mark">${navMark(id)}</span>
+    <button class="nav-row ${activePage === item.id ? "active" : ""}" data-action="select-settings-page" data-page="${item.id}" type="button">
+      <span class="nav-mark">${navMark(item.id)}</span>
       <span>
-        <strong>${label}</strong>
-        <small>${hint}</small>
+        <strong>${escapeHtml(item.label)}</strong>
+        <small>${escapeHtml(item.hint)}</small>
       </span>
+    </button>
+  `;
+}
+
+function renderNavChild(item, activePage) {
+  return `
+    <button class="nav-child ${activePage === item.id ? "active" : ""}" data-action="select-settings-page" data-page="${item.id}" type="button">
+      <strong>${escapeHtml(item.label)}</strong>
+      <small>${escapeHtml(item.hint)}</small>
     </button>
   `;
 }
 
 function renderPage(page, model, state) {
   switch (page) {
-    case "skills":
-      return renderSkillsPage(model, state);
-    case "agents":
-      return renderAgentsPage(model, state);
-    case "remote":
-      return renderRemotePage(model, state);
-    case "sync":
-      return renderSyncPage(model, state);
+    case "local-on-this-mac":
+      return renderLocalOnThisMacPage(model, state);
+    case "local-on-remote":
+      return renderLocalOnRemotePage(model, state);
+    case "remote-source":
+      return renderRemoteSourcePage(model, state);
+    case "remote-on-this-mac":
+      return renderRemoteOnThisMacPage(model, state);
+    case "skills-local":
+      return renderSkillsPage(model, state, "local");
+    case "skills-remote":
+      return renderSkillsPage(model, state, "remote");
+    case "activity":
+      return renderActivityPage(model, state);
     case "advanced":
       return renderAdvancedPage(model, state);
-    case "general":
+    case "overview":
     default:
-      return renderGeneralPage(model);
+      return renderOverviewPage(model);
   }
 }
 
-function renderGeneralPage(model) {
+function renderOverviewPage(model) {
+  const localEnvironment = localEnvironmentConfig(model);
+  const remoteTargets = remoteEnvironments(model);
+  const localLibrary = sourceLibrary(model, "local");
+  const remoteLibrary = sourceLibrary(model, "remote");
+
   return `
-    <div class="settings-page">
+    <div class="settings-page wide">
       <section class="overview-hero">
         <div class="status-orb ${model.conflictCount ? "bad" : "good"}">
           <span>${model.conflictCount ? "!" : "OK"}</span>
         </div>
         <div class="overview-copy">
-          <p class="section-label">Shared source</p>
+          <p class="section-label">Current source</p>
           <h2>${escapeHtml(model.healthLabel)}</h2>
-          <p>${model.skills.length} skills are available from ${escapeHtml(shortPath(model.sourceRoot))}.</p>
+          <p>${model.skills.length} skills are available from ${escapeHtml(shortPath(model.sourceRoot))}. Configure sources and targets first, then apply links from the Skills library.</p>
         </div>
         <span class="status-pill ${model.conflictCount ? "bad" : "good"}">${model.conflictCount ? `${model.conflictCount} conflicts` : "Ready"}</span>
       </section>
 
-      <section class="metric-grid">
-        ${renderMetricTile("Skills", model.skills.length, "Detected in source")}
-        ${renderMetricTile("Links", model.enabledCount, "Enabled across agents")}
-        ${renderMetricTile("Conflicts", model.conflictCount, "Skipped until resolved", model.conflictCount ? "bad" : "")}
+      <section class="metric-grid four">
+        ${renderMetricTile("Local library", localLibrary.skills.length, "Skills on this Mac")}
+        ${renderMetricTile("Remote library", remoteLibrary.skills.length, "Pulled into local cache")}
+        ${renderMetricTile("Local agents", localEnvironment?.agents?.length ?? 0, "On this Mac")}
+        ${renderMetricTile("Remote machines", remoteTargets.length, "Configured over SSH")}
       </section>
 
-      ${renderPreferenceBlock("Locations", "Folder choices used by local agents.", `
-        ${renderInfoRow("Shared source", model.sourceRoot)}
+      <section class="workflow-list">
+        ${renderWorkflowCard("1", "Use local skills on this Mac", "Pick the local skills folder and the local agent folders that should receive links.", "Configure", "local-on-this-mac")}
+        ${renderWorkflowCard("2", "Use local skills on remote machines", "Add SSH targets and their agent folders. Syncing is run from the local library.", "Configure", "local-on-remote")}
+        ${renderWorkflowCard("3", "Use remote skills on this Mac", "Set the remote source and local cache, then apply the pulled library to local agents.", "Configure", "remote-source")}
+      </section>
+
+      ${renderPreferenceBlock("Current source", "This folder is used when links are created.", `
+        ${renderInfoRow("Source folder", model.sourceRoot)}
         ${renderInfoRow("Config home", model.dashboard?.configHome)}
         ${renderInfoRow("Active profile", model.dashboard?.config?.activeSourceProfileId)}
       `)}
-
-      <section class="agent-summary-grid">
-        ${AGENTS.map(([agentId, label]) => renderAgentSummary(agentId, label, model)).join("")}
-      </section>
     </div>
   `;
 }
 
-function renderSkillsPage(model, state) {
-  const selectedSkill = model.skills.find((skill) => skill.skillId === state.selectedSkillId);
-  if (selectedSkill) return renderSkillDetailPage(selectedSkill, model);
-
+function renderWorkflowCard(index, title, text, actionLabel, page) {
   return `
-    <div class="settings-page">
-      ${renderSectionIntro("Skill library", "Open a skill to choose which local and remote agents can use it.")}
-      <section class="pref-group skill-list">
-        ${model.skills.map((skill) => renderSkillPreference(skill, model)).join("") || renderEmptyState("No skills found", "Choose a shared source folder that contains skill directories.")}
-      </section>
-    </div>
-  `;
-}
-
-function renderSkillPreference(skill, model) {
-  const totalAgents = allConfiguredAgents(model).length;
-  const enabledAgents = allConfiguredAgents(model).filter(({ agent }) =>
-    agent.enabledSkillIds?.includes(skill.skillId),
-  );
-
-  return `
-    <button class="pref-row skill-pref skill-open-row" data-action="select-skill" data-skill="${escapeAttr(skill.skillId)}" type="button">
-      <div class="skill-token">${escapeHtml(skill.skillId.slice(0, 2).toUpperCase())}</div>
-      <div class="pref-main">
-        <strong>${escapeHtml(skill.skillId)}</strong>
-        <span title="${escapeAttr(skill.path)}">${escapeHtml(shortPath(skill.path))}</span>
-      </div>
-      <small class="count-label">${enabledAgents.length}/${totalAgents || 0} agents</small>
-      <span class="row-chevron">Configure</span>
+    <button class="workflow-card" data-action="select-settings-page" data-page="${escapeAttr(page)}" type="button">
+      <span class="workflow-index">${escapeHtml(index)}</span>
+      <strong>${escapeHtml(title)}</strong>
+      <small>${escapeHtml(text)}</small>
+      <span>${escapeHtml(actionLabel)}</span>
     </button>
   `;
 }
 
-function renderSkillDetailPage(skill, model) {
+function renderLocalOnThisMacPage(model, state) {
   return `
-    <div class="settings-page">
-      <section class="detail-head">
-        <button class="mac-button quiet" data-action="back-to-skills" type="button">Back</button>
-        <div class="detail-title">
-          <div class="skill-token">${escapeHtml(skill.skillId.slice(0, 2).toUpperCase())}</div>
-          <div>
-            <h2>${escapeHtml(skill.skillId)}</h2>
-            <p title="${escapeAttr(skill.path)}">${escapeHtml(shortPath(skill.path))}</p>
-          </div>
-        </div>
-      </section>
-
-      ${environmentGroups(model).map((environment) => renderSkillEnvironment(environment, skill, model)).join("")}
+    <div class="settings-page wide">
+      ${renderSectionIntro("On This Mac", "Configure this Mac to read local skills and expose them to local agents. Applying skills is run from Skills.")}
+      ${renderLocalSourceForm(model, state)}
+      ${renderLocalTargetsPanel(
+        model,
+        state,
+        "Local agents",
+        "Configure the local agent skills folders. These settings are used when you apply skills from the Skills page.",
+      )}
     </div>
   `;
 }
 
-function renderSkillEnvironment(environment, skill, model) {
-  return renderPreferenceBlock(environmentTitle(environment), environmentSubtitle(environment), `
-    ${environment.agents.map((agent) => renderSkillAgentToggle(environment, agent, skill, model)).join("") || renderEmptyState("No agents configured", "Add agent folders for this environment first.")}
+function renderLocalOnRemotePage(model, state) {
+  return `
+    <div class="settings-page wide">
+      ${renderSectionIntro("On Remote Machines", "Configure remote machines that should use this Mac's local source. Syncing and applying skills are run from Skills.")}
+      ${renderLocalSourceForm(model, state)}
+      ${renderRemoteEnvironmentForm(model, state)}
+      ${renderRemoteTargetsPanel(model, state)}
+    </div>
+  `;
+}
+
+function renderRemoteSourcePage(model, state) {
+  return `
+    <div class="settings-page wide">
+      ${renderSectionIntro("Remote Source", "Configure the SSH source and the local cache that will hold pulled remote skills. Pulling is run from Skills.")}
+      ${renderRemoteSourceForm(model, state)}
+    </div>
+  `;
+}
+
+function renderRemoteOnThisMacPage(model, state) {
+  return `
+    <div class="settings-page wide">
+      ${renderSectionIntro("On This Mac", "Configure local agent folders that will use the pulled remote cache. Applying skills is run from Skills.")}
+      ${renderLocalTargetsPanel(
+        model,
+        state,
+        "Local agents using remote cache",
+        "Configure the local agent folders that will use the pulled cache.",
+      )}
+    </div>
+  `;
+}
+
+function renderLocalSourceForm(model, state) {
+  const localSource = sourceProfileByKind(model, "local");
+  const isActive = model.dashboard?.config?.activeSourceProfileId === localSource?.sourceProfileId;
+
+  return `
+    <form class="remote-card source-card" data-form="local-source">
+      <div class="mode-card-head">
+        <span class="mode-icon">SRC</span>
+        <div>
+          <strong>Local source</strong>
+          <small>The local folder this Mac reads from.</small>
+        </div>
+        <span class="status-pill ${isActive ? "good" : "muted"}">${isActive ? "Active" : "Saved"}</span>
+      </div>
+      <div class="form-list">
+        ${renderTextField("Profile ID", "sourceProfileId", localSource?.sourceProfileId ?? "local-personal")}
+        ${renderTextField("Source folder", "sourceRoot", localSource?.sourceRoot ?? model.sourceRoot, "/Users/alice/shared-skills", true)}
+      </div>
+      <button class="mac-button primary" type="submit" ${state.busy ? "disabled" : ""}>Save local source</button>
+    </form>
+  `;
+}
+
+function renderRemoteSourceForm(model, state) {
+  const remoteSource = sourceProfileByKind(model, "remote");
+  const isActive = model.dashboard?.config?.activeSourceProfileId === remoteSource?.sourceProfileId;
+
+  return `
+    <form class="remote-card source-card" data-form="remote-source">
+      <div class="mode-card-head">
+        <span class="mode-icon">SRC</span>
+        <div>
+          <strong>Remote source</strong>
+          <small>Pull a remote skills source into this Mac's local cache.</small>
+        </div>
+        <span class="status-pill ${isActive ? "good" : remoteSource ? "muted" : "bad"}">${isActive ? "Active" : remoteSource ? "Saved" : "Not set"}</span>
+      </div>
+      <div class="form-list">
+        ${renderTextField("Profile ID", "sourceProfileId", remoteSource?.sourceProfileId ?? "remote-personal")}
+        ${renderTextField("Host", "host", remoteSource?.host ?? "", "devbox", true)}
+        ${renderTextField("User", "user", remoteSource?.user ?? "", "alice", true)}
+        ${renderTextField("Remote source", "remoteSourceRoot", remoteSource?.remoteSourceRoot ?? "", "/home/alice/shared-skills", true)}
+        ${renderTextField("Local cache", "localCacheRoot", remoteSource?.localCacheRoot ?? "~/.skills-manager/cache/remote-personal", "", true)}
+      </div>
+      ${renderOptionStrip(remoteSource)}
+      <button class="mac-button primary" type="submit" ${state.busy ? "disabled" : ""}>Save remote source</button>
+    </form>
+  `;
+}
+
+function renderLocalTargetsPanel(model, state, title, text) {
+  const localEnvironment = localEnvironmentConfig(model);
+  if (!localEnvironment) {
+    return renderPreferenceBlock(title, "Local agents are not configured yet.", renderEmptyState("No local target", "Initialize a source first."));
+  }
+
+  return `
+    <section class="target-block">
+      <div class="target-block-head">
+        <div>
+          <h3>${escapeHtml(title)}</h3>
+          <p>${escapeHtml(text)}</p>
+        </div>
+      </div>
+      <div class="agent-environment-list">
+        ${AGENTS.map(([agentId, label]) => renderAgentSection(localEnvironment, agentId, label, model, state)).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderRemoteEnvironmentForm(model, state) {
+  const nextRemoteIndex = remoteEnvironments(model).length + 1;
+  const defaultEnvironmentId = nextRemoteIndex === 1 ? "devbox" : `devbox-${nextRemoteIndex}`;
+
+  return `
+    <form class="remote-card target-config-card" data-form="remote-environment">
+      <div class="mode-card-head">
+        <span class="mode-icon">SSH</span>
+        <div>
+          <strong>Add remote machine</strong>
+          <small>Configure the remote cache and remote agent skills folders.</small>
+        </div>
+      </div>
+      <div class="form-list">
+        ${renderTextField("Environment", "environmentId", defaultEnvironmentId, "", true)}
+        ${renderTextField("Host", "host", "", "devbox", true)}
+        ${renderTextField("User", "user", "", "alice", true)}
+        ${renderTextField("Remote cache", "remoteCacheRoot", "~/.skills-manager/cache/personal", "", true)}
+        <label class="form-row">
+          <span>Mode</span>
+          <select name="direction">
+            <option value="push-local-to-remote" selected>Use this Mac source on remote target</option>
+          </select>
+        </label>
+        ${renderTextField("Codex folder", "codexSkillsDir", "", "~/.codex/skills")}
+        ${renderTextField("Claude folder", "claudeCodeSkillsDir", "", "~/.claude/skills")}
+        ${renderTextField("OpenCode folder", "opencodeSkillsDir", "", "~/.config/opencode/skills")}
+      </div>
+      ${renderOptionStrip(null)}
+      <button class="mac-button primary" type="submit" ${state.busy ? "disabled" : ""}>Add remote machine</button>
+    </form>
+  `;
+}
+
+function renderRemoteTargetsPanel(model, state) {
+  const remoteEnvs = remoteEnvironments(model);
+
+  return renderPreferenceBlock("Remote machines", "Configured remote machines. Sync and linking are run from Skills.", `
+    ${remoteEnvs.map((environment) => renderRemoteTargetEnvironment(environment, model, state)).join("") || renderEmptyState("No remote machines", "Add a remote machine above.")}
   `);
 }
 
-function renderSkillAgentToggle(environment, agent, skill, model) {
-  const enabled = agent.enabledSkillIds?.includes(skill.skillId) ?? false;
-  const rows = model.statuses.filter(
-    (item) =>
-      item.environmentId === environment.environmentId &&
-      item.agentId === agent.agentId &&
-      item.skillId === skill.skillId,
-  );
-  const status = rows[0]?.status ?? (enabled ? "pending" : "disabled");
-
+function renderRemoteTargetEnvironment(environment, model, state) {
   return `
-    <div class="pref-row skill-agent-row">
-      <div class="pref-main">
-        <strong>${escapeHtml(agentLabel(agent.agentId))}</strong>
-        <span title="${escapeAttr(agent.skillsDir)}">${escapeHtml(shortPath(agent.skillsDir))}</span>
-      </div>
-      <span class="status-pill ${statusTone(status)}">${escapeHtml(status)}</span>
-      ${renderAgentToggle(environment.environmentId, agent.agentId, agentLabel(agent.agentId), skill.skillId, enabled)}
-    </div>
-  `;
-}
-
-function renderAgentsPage(model, state) {
-  return `
-    <div class="settings-page wide">
-      ${renderSectionIntro("Agent folders", "Local and remote agent targets are managed by environment. Remote targets appear after Remote is configured.")}
-      <div class="agent-panels">
-        ${environmentGroups(model).map((environment) => renderEnvironmentAgentGroup(environment, model, state)).join("")}
-      </div>
-    </div>
-  `;
-}
-
-function renderEnvironmentAgentGroup(environment, model, state) {
-  return `
-    <section class="preference-section">
-      <div class="group-heading">
-        <h3>${escapeHtml(environmentTitle(environment))}</h3>
-        <p>${escapeHtml(environmentSubtitle(environment))}</p>
+    <section class="remote-target-section compact-section">
+      <div class="remote-target-title">
+        <div>
+          <strong>${escapeHtml(environmentTitle(environment))}</strong>
+          <span>${escapeHtml(environmentSubtitle(environment))}</span>
+        </div>
+        <div class="row-actions">
+          <button class="mac-button" data-action="remote-cli-status" data-environment="${escapeAttr(environment.environmentId)}" ${state.busy ? "disabled" : ""}>Test SSH</button>
+        </div>
       </div>
       <div class="agent-environment-list">
         ${AGENTS.map(([agentId, label]) => renderAgentSection(environment, agentId, label, model, state)).join("")}
@@ -221,19 +372,17 @@ function renderEnvironmentAgentGroup(environment, model, state) {
 
 function renderAgentSection(environment, agentId, label, model, state) {
   const agent = environment.agents.find((item) => item.agentId === agentId);
-  const detected = environment.environmentId === "local"
-    ? model.dashboard?.detection?.agents?.find((item) => item.agentId === agentId)
-    : null;
+  const detected =
+    environment.environmentId === "local"
+      ? model.dashboard?.detection?.agents?.find((item) => item.agentId === agentId)
+      : null;
   const rows = model.statuses.filter(
     (item) => item.environmentId === environment.environmentId && item.agentId === agentId,
   );
   const linked = rows.filter((item) => item.status === "enabled").length;
   const conflicts = rows.filter((item) => item.status === "conflict" || item.status === "invalid").length;
   const commandStatus = detected?.command?.status ?? "unknown";
-  const fallbackDir =
-    agent?.skillsDir ??
-    detected?.recommendedSkillsDir ??
-    defaultRemoteAgentDir(agentId);
+  const fallbackDir = agent?.skillsDir ?? detected?.recommendedSkillsDir ?? defaultRemoteAgentDir(agentId);
 
   return `
     <section class="pref-group agent-card">
@@ -241,8 +390,8 @@ function renderAgentSection(environment, agentId, label, model, state) {
         <div class="pref-row agent-head">
           <div class="agent-icon">${escapeHtml(label.slice(0, 1))}</div>
           <div class="pref-main">
-            <strong>${label}</strong>
-            <span>${linked} linked, ${conflicts} conflicts${environment.environmentId === "local" ? `, command ${escapeHtml(commandStatus)}` : ""}</span>
+            <strong>${escapeHtml(label)}</strong>
+            <span>${linked} enabled, ${conflicts} conflicts${environment.environmentId === "local" ? `, command ${escapeHtml(commandStatus)}` : ""}</span>
           </div>
           <label class="mac-check">
             <input type="checkbox" name="managed" ${agent?.managed !== false && agent ? "checked" : ""} />
@@ -259,122 +408,190 @@ function renderAgentSection(environment, agentId, label, model, state) {
   `;
 }
 
-function renderRemotePage(model, state) {
+function renderSkillsPage(model, state, sourceKind = "local") {
+  const library = sourceLibrary(model, sourceKind);
+  const selectedSkill = library.skills.find((skill) => skill.skillId === state.selectedSkillId);
+  if (selectedSkill) return renderSkillDetailPage(selectedSkill, model, sourceKind);
+  const title = sourceKind === "remote" ? "Remote Library" : "Local Library";
+  const intro =
+    sourceKind === "remote"
+      ? "Review skills pulled from a remote source, pull the latest cache, and apply them to this Mac's agents."
+      : "Review local skills, apply them to this Mac, or sync them to configured remote machines.";
+  const emptyText =
+    sourceKind === "remote"
+      ? "Configure a remote source and pull it into the local cache first."
+      : "Choose a shared local source folder that contains skill directories.";
+
   return `
     <div class="settings-page wide">
-      ${renderSectionIntro("Remote access", "Configure both directions: this Mac can use a remote source, and remote machines can pull from this Mac's source cache.")}
-      <section class="remote-mode-grid">
-        ${renderRemoteSourceForm(model, state)}
-        ${renderRemoteEnvironmentForm(model, state)}
+      ${renderSectionIntro(title, intro)}
+      ${renderLibrarySummary(library)}
+      ${renderSkillApplyPanel(model, state, sourceKind)}
+      <section class="pref-group skill-list">
+        ${library.skills.map((skill) => renderSkillPreference(skill, model, sourceKind)).join("") || renderEmptyState("No skills found", emptyText)}
       </section>
     </div>
   `;
 }
 
-function renderRemoteSourceForm(model, state) {
-  const remoteSource = model.dashboard?.config?.sourceProfiles?.find(
-    (profile) => profile.kind === "remote",
-  );
+function renderLibrarySummary(library) {
+  const helper = library.error
+    ? "This source cannot be scanned yet."
+    : library.active
+      ? "This is the source used by apply and sync actions."
+      : "This source is saved, but apply and sync actions require it to be active.";
 
-  return `
-    <form class="remote-card" data-form="remote-source">
-      <div class="mode-card-head">
-        <span class="mode-icon">IN</span>
-        <div>
-          <strong>Use remote skills</strong>
-          <small>This Mac pulls a remote source into a local cache.</small>
+  return renderPreferenceBlock("Library source", helper, `
+    ${renderInfoRow("Profile", library.sourceProfileId)}
+    ${renderInfoRow("Folder", library.sourceRoot)}
+    ${renderInfoRow("Active", library.active ? "Yes" : "No")}
+    ${library.error ? renderInfoRow("Scan status", library.error) : renderInfoRow("Skills", String(library.skills.length))}
+  `);
+}
+
+function renderSkillApplyPanel(model, state, sourceKind) {
+  const localReady = Boolean(localEnvironmentConfig(model));
+  const remoteSource = sourceProfileByKind(model, "remote");
+  const activeKind = activeSourceKind(model);
+  const remoteEnvs = remoteEnvironments(model);
+  const localActive = activeKind === "local";
+  const remoteActive = activeKind === "remote";
+
+  if (sourceKind === "remote") {
+    return renderPreferenceBlock("Run remote library actions", "Pull the remote source first, then apply the cached skills to local agents.", `
+      <div class="pref-row action-row">
+        <div class="pref-main">
+          <strong>Pull remote source</strong>
+          <span>Update this Mac's local cache from the configured remote skills source.</span>
+        </div>
+        <div class="row-actions">
+          <button class="mac-button" data-action="remote-sync-plan" data-direction="pull-remote-to-local" data-environment="" ${state.busy || !remoteSource || !remoteActive ? "disabled" : ""}>Plan pull</button>
+          <button class="mac-button primary" data-action="remote-sync-run" data-direction="pull-remote-to-local" data-environment="" ${state.busy || !remoteSource || !remoteActive ? "disabled" : ""}>Pull to this Mac</button>
         </div>
       </div>
-      <div class="form-list">
-        ${renderTextField("Profile ID", "sourceProfileId", remoteSource?.sourceProfileId ?? "remote-personal")}
-        ${renderTextField("Host", "host", remoteSource?.host ?? "", "devbox", true)}
-        ${renderTextField("User", "user", remoteSource?.user ?? "", "alice", true)}
-        ${renderTextField("Remote source", "remoteSourceRoot", remoteSource?.remoteSourceRoot ?? "", "/home/alice/shared-skills", true)}
-        ${renderTextField("Local cache", "localCacheRoot", remoteSource?.localCacheRoot ?? "~/.skills-manager/cache/remote-personal", "", true)}
+      <div class="pref-row action-row">
+        <div class="pref-main">
+          <strong>Local agents</strong>
+          <span>Apply the pulled cache to Codex, Claude Code, and OpenCode on this Mac.</span>
+        </div>
+        <button class="mac-button primary" data-action="reconcile-all" ${state.busy || !localReady || !remoteActive ? "disabled" : ""}>Apply local links</button>
       </div>
-      ${renderOptionStrip(remoteSource)}
-      <button class="mac-button primary" type="submit" ${state.busy ? "disabled" : ""}>Save source</button>
-    </form>
+    `);
+  }
+
+  return renderPreferenceBlock("Run local library actions", "Apply this Mac's local skills to local agents or configured remote machines.", `
+    <div class="pref-row action-row">
+      <div class="pref-main">
+        <strong>Local agents</strong>
+        <span>Apply the current source to Codex, Claude Code, and OpenCode on this Mac.</span>
+      </div>
+      <button class="mac-button primary" data-action="reconcile-all" ${state.busy || !localReady || !localActive ? "disabled" : ""}>Apply local links</button>
+    </div>
+    ${remoteEnvs.map((environment) => renderRemoteApplyRow(environment, state, localActive)).join("") || renderEmptyState("No remote machines", "Configure remote machines before syncing remote agents.")}
+  `);
+}
+
+function renderRemoteApplyRow(environment, state, enabled) {
+  const remote = environment.user && environment.host ? `${environment.user}@${environment.host}` : environment.environmentId;
+
+  return `
+    <div class="pref-row action-row">
+      <div class="pref-main">
+        <strong>${escapeHtml(environment.environmentId)}</strong>
+        <span>Sync this Mac's local skills to ${escapeHtml(remote)}, then apply links inside the remote agent folders.</span>
+      </div>
+      <div class="row-actions">
+        <button class="mac-button" data-action="remote-sync-plan" data-direction="push-local-to-remote" data-environment="${escapeAttr(environment.environmentId)}" ${state.busy || !enabled ? "disabled" : ""}>Plan sync</button>
+        <button class="mac-button primary" data-action="remote-sync-run" data-direction="push-local-to-remote" data-environment="${escapeAttr(environment.environmentId)}" ${state.busy || !enabled ? "disabled" : ""}>Sync & apply</button>
+      </div>
+    </div>
   `;
 }
 
-function renderRemoteEnvironmentForm(model, state) {
-  const remoteEnv = model.dashboard?.config?.environments?.find(
-    (environment) => environment.kind === "remote",
+function renderSkillPreference(skill, model, sourceKind) {
+  const targets = skillTargetAgents(model, sourceKind);
+  const enabledAgents = targets.filter(({ agent }) =>
+    agent.enabledSkillIds?.includes(skill.skillId),
   );
+  const page = sourceKind === "remote" ? "skills-remote" : "skills-local";
 
   return `
-    <form class="remote-card" data-form="remote-environment">
-      <div class="mode-card-head">
-        <span class="mode-icon">OUT</span>
-        <div>
-          <strong>Remote pulls from this Mac</strong>
-          <small>Prepare a remote cache so agents on that machine use this Mac's skills.</small>
-        </div>
+    <button class="pref-row skill-pref skill-open-row" data-action="select-skill" data-page="${page}" data-skill="${escapeAttr(skill.skillId)}" type="button">
+      <div class="skill-token">${escapeHtml(skill.skillId.slice(0, 2).toUpperCase())}</div>
+      <div class="pref-main">
+        <strong>${escapeHtml(skill.skillId)}</strong>
+        <span title="${escapeAttr(skill.path)}">${escapeHtml(shortPath(skill.path))}</span>
       </div>
-      <div class="form-list">
-        ${renderTextField("Environment", "environmentId", remoteEnv?.environmentId ?? "devbox", "", true)}
-        ${renderTextField("Host", "host", remoteEnv?.host ?? "", "devbox", true)}
-        ${renderTextField("User", "user", remoteEnv?.user ?? "", "alice", true)}
-        ${renderTextField("Remote cache", "remoteCacheRoot", remoteEnv?.remoteCacheRoot ?? "~/.skills-manager/cache/personal", "", true)}
-        <label class="form-row">
-          <span>Direction</span>
-          <select name="direction">
-            <option value="push-local-to-remote" ${remoteEnv?.syncDirection !== "pull-remote-to-local" ? "selected" : ""}>Push local to remote</option>
-            <option value="pull-remote-to-local" ${remoteEnv?.syncDirection === "pull-remote-to-local" ? "selected" : ""}>Pull remote to local</option>
-          </select>
-        </label>
-        ${renderTextField("Codex folder", "codexSkillsDir", remoteAgentDir(remoteEnv, "codex"), "~/.codex/skills")}
-        ${renderTextField("Claude folder", "claudeCodeSkillsDir", remoteAgentDir(remoteEnv, "claude-code"), "~/.claude/skills")}
-        ${renderTextField("OpenCode folder", "opencodeSkillsDir", remoteAgentDir(remoteEnv, "opencode"), "~/.config/opencode/skills")}
-      </div>
-      ${renderOptionStrip(remoteEnv)}
-      <button class="mac-button primary" type="submit" ${state.busy ? "disabled" : ""}>Save remote</button>
-    </form>
+      <small class="count-label">${enabledAgents.length}/${targets.length || 0} targets</small>
+      <span class="row-chevron">Open</span>
+    </button>
   `;
 }
 
-function renderSyncPage(model, state) {
-  const remoteEnv = model.dashboard?.config?.environments?.find(
-    (environment) => environment.kind === "remote",
+function renderSkillDetailPage(skill, model, sourceKind) {
+  return `
+    <div class="settings-page">
+      <section class="detail-head">
+        <button class="mac-button quiet" data-action="back-to-skills" type="button">Back</button>
+        <div class="detail-title">
+          <div class="skill-token">${escapeHtml(skill.skillId.slice(0, 2).toUpperCase())}</div>
+          <div>
+            <h2>${escapeHtml(skill.skillId)}</h2>
+            <p title="${escapeAttr(skill.path)}">${escapeHtml(shortPath(skill.path))}</p>
+          </div>
+        </div>
+      </section>
+
+      ${skillTargetEnvironments(model, sourceKind).map((environment) => renderSkillEnvironment(environment, skill, model, sourceKind)).join("")}
+    </div>
+  `;
+}
+
+function renderSkillEnvironment(environment, skill, model, sourceKind) {
+  return renderPreferenceBlock(environmentTitle(environment), environmentSubtitle(environment), `
+    ${environment.agents.map((agent) => renderSkillAgentToggle(environment, agent, skill, model, sourceKind)).join("") || renderEmptyState("No agents configured", "Add agent folders for this environment first.")}
+  `);
+}
+
+function renderSkillAgentToggle(environment, agent, skill, model, sourceKind) {
+  const enabled = agent.enabledSkillIds?.includes(skill.skillId) ?? false;
+  const libraryActive = activeSourceKind(model) === sourceKind;
+  const rows = model.statuses.filter(
+    (item) =>
+      item.environmentId === environment.environmentId &&
+      item.agentId === agent.agentId &&
+      item.skillId === skill.skillId,
   );
-  const remoteSource = model.dashboard?.config?.sourceProfiles?.find(
-    (profile) => profile.kind === "remote",
-  );
-  const environmentId = remoteEnv?.environmentId ?? "";
+  const status = libraryActive ? rows[0]?.status ?? (enabled ? "pending" : "disabled") : enabled ? "enabled" : "disabled";
+
+  return `
+    <div class="pref-row skill-agent-row">
+      <div class="pref-main">
+        <strong>${escapeHtml(agentLabel(agent.agentId))}</strong>
+        <span title="${escapeAttr(agent.skillsDir)}">${escapeHtml(shortPath(agent.skillsDir))}</span>
+      </div>
+      <span class="status-pill ${statusTone(status)}">${escapeHtml(status)}</span>
+      ${renderAgentToggle(environment.environmentId, agent.agentId, agentLabel(agent.agentId), skill.skillId, enabled)}
+    </div>
+  `;
+}
+
+function renderActivityPage(model, state) {
+  const problemRows = model.statuses.filter((item) => item.status === "conflict" || item.status === "invalid");
 
   return `
     <div class="settings-page">
-      ${renderSectionIntro("Remote sync", "Plan first when you want to inspect the commands. Run applies the same plan.")}
-      <section class="sync-console">
-        <div class="sync-head">
-          <div>
-            <strong>Remote target</strong>
-            <span>${remoteEnv ? `${escapeHtml(remoteEnv.user)}@${escapeHtml(remoteEnv.host)}` : "Not configured"}</span>
-          </div>
-          <button class="mac-button" data-action="remote-cli-status" data-environment="${escapeAttr(environmentId)}" ${state.busy || !remoteEnv ? "disabled" : ""}>Test CLI</button>
-        </div>
-        ${renderSyncAction("Prepare remote cache", remoteEnv?.remoteCacheRoot, "push-local-to-remote", environmentId, Boolean(remoteEnv), state)}
-        ${renderSyncAction("Pull remote source", remoteSource?.localCacheRoot, "pull-remote-to-local", "", Boolean(remoteSource), state)}
-      </section>
+      ${renderSectionIntro("Activity", "Review the last operation and any skipped conflicts. Conflicts are shown, never overwritten.")}
       ${renderRemoteSyncResult(state.lastRemoteSync)}
+      ${renderConflictPanel(problemRows)}
     </div>
   `;
 }
 
-function renderSyncAction(title, path, direction, environmentId, enabled, state) {
-  return `
-    <div class="sync-row">
-      <div class="pref-main">
-        <strong>${escapeHtml(title)}</strong>
-        <span>${path ? escapeHtml(path) : "Configure Remote first"}</span>
-      </div>
-      <div class="row-actions">
-        <button class="mac-button" data-action="remote-sync-plan" data-direction="${escapeAttr(direction)}" data-environment="${escapeAttr(environmentId)}" ${state.busy || !enabled ? "disabled" : ""}>Plan</button>
-        <button class="mac-button primary" data-action="remote-sync-run" data-direction="${escapeAttr(direction)}" data-environment="${escapeAttr(environmentId)}" ${state.busy || !enabled ? "disabled" : ""}>Run</button>
-      </div>
-    </div>
-  `;
+function renderConflictPanel(problemRows) {
+  return renderPreferenceBlock("Current conflicts", "Resolve these paths manually, then apply links again.", `
+    ${problemRows.map(renderStatusProblemRow).join("") || renderEmptyState("No conflicts", "All configured links are clear.")}
+  `);
 }
 
 function renderAdvancedPage(model, state) {
@@ -397,15 +614,25 @@ function renderAdvancedPage(model, state) {
 }
 
 function renderRemoteSyncResult(result) {
-  if (!result) return "";
+  if (!result) {
+    return renderPreferenceBlock("Last operation", "No remote operation has run in this window.", renderEmptyState("No activity yet", "Run a source pull or remote sync to see results here."));
+  }
+
   const linkActions = result.remoteLink?.actions ?? [];
   const plannedLinks = result.remoteLinkPlan?.links ?? [];
   const applied = linkActions.filter((action) => action.status === "applied").length;
   const skipped = linkActions.filter((action) => action.status === "skipped").length;
   const conflicts = linkActions.filter((action) => action.status === "conflict").length;
   const failed = linkActions.filter((action) => action.status === "failed").length;
+  const direction = result.sync?.plan?.direction ?? result.plan?.direction ?? "unknown";
+  const operationLabel =
+    direction === "pull-remote-to-local"
+      ? "Remote source pull"
+      : direction === "push-local-to-remote"
+        ? "Remote machine sync"
+        : "Remote operation";
 
-  return renderPreferenceBlock("Last remote operation", "Remote cache sync and agent link results.", `
+  return renderPreferenceBlock("Last operation", operationLabel, `
     <div class="pref-row">
       <span class="pref-label">Cache sync</span>
       <strong>${result.sync ? "Completed" : result.plan ? "Planned" : "Not run"}</strong>
@@ -414,7 +641,7 @@ function renderRemoteSyncResult(result) {
       <span class="pref-label">Remote links</span>
       <strong>${result.remoteLink ? `${applied} applied, ${skipped} skipped, ${conflicts} conflicts, ${failed} failed` : `${plannedLinks.length} planned`}</strong>
     </div>
-    ${linkActions.slice(0, 6).map(renderRemoteLinkAction).join("")}
+    ${linkActions.slice(0, 8).map(renderRemoteLinkAction).join("")}
   `);
 }
 
@@ -426,6 +653,18 @@ function renderRemoteLinkAction(action) {
         <span title="${escapeAttr(action.targetPath)}">${escapeHtml(shortPath(action.targetPath))}</span>
       </div>
       <span class="status-pill ${statusTone(action.status)}">${escapeHtml(action.status)}</span>
+    </div>
+  `;
+}
+
+function renderStatusProblemRow(row) {
+  return `
+    <div class="pref-row">
+      <div class="pref-main">
+        <strong>${escapeHtml(agentLabel(row.agentId))} · ${escapeHtml(row.skillId)}</strong>
+        <span title="${escapeAttr(row.targetPath)}">${escapeHtml(shortPath(row.targetPath))}</span>
+      </div>
+      <span class="status-pill ${statusTone(row.status)}">${escapeHtml(row.status)}</span>
     </div>
   `;
 }
@@ -454,26 +693,6 @@ function renderAgentToggle(environmentId, agentId, label, skillId, enabled) {
     <button class="agent-chip ${enabled ? "on" : ""}" data-action="toggle-skill" data-environment="${escapeAttr(environmentId)}" data-agent="${agentId}" data-skill="${escapeAttr(skillId)}" aria-pressed="${enabled}" title="${escapeAttr(label)}" type="button">
       ${enabled ? "On" : "Off"}
     </button>
-  `;
-}
-
-function renderAgentSummary(agentId, label, model) {
-  const localEnvironment = environmentGroups(model).find((environment) => environment.environmentId === "local");
-  const agent = localEnvironment?.agents.find((item) => item.agentId === agentId);
-  const rows = model.statuses.filter((item) => item.environmentId === "local" && item.agentId === agentId);
-  const linked = rows.filter((item) => item.status === "enabled").length;
-  const conflicts = rows.filter((item) => item.status === "conflict" || item.status === "invalid").length;
-  const managed = agent?.managed !== false && Boolean(agent);
-
-  return `
-    <article class="agent-summary">
-      <div class="agent-icon">${escapeHtml(label.slice(0, 1))}</div>
-      <div>
-        <strong>${escapeHtml(label)}</strong>
-        <span>${managed ? `${linked} linked` : "Not managed"}</span>
-      </div>
-      <span class="status-pill ${conflicts ? "bad" : managed ? "good" : "muted"}">${conflicts ? `${conflicts} conflicts` : managed ? "Ready" : "Off"}</span>
-    </article>
   `;
 }
 
@@ -566,47 +785,112 @@ function renderOptionStrip(config) {
 
 function navMark(id) {
   return {
-    general: "G",
-    skills: "S",
-    agents: "A",
-    remote: "R",
-    sync: "Y",
+    overview: "O",
+    "use-local": "L",
+    "use-remote": "R",
+    skills: "K",
+    activity: "A",
     advanced: "X",
   }[id];
 }
 
 function pageTitle(page) {
   return {
-    general: "General",
-    skills: "Skills",
-    agents: "Agents",
-    remote: "Remote",
-    sync: "Sync",
+    overview: "Overview",
+    "local-on-this-mac": "On This Mac",
+    "local-on-remote": "On Remote Machines",
+    "remote-source": "Remote Source",
+    "remote-on-this-mac": "On This Mac",
+    "skills-local": "Local Library",
+    "skills-remote": "Remote Library",
+    activity: "Activity",
     advanced: "Advanced",
   }[page];
 }
 
 function pageSubtitle(page) {
   return {
-    general: "Source health, active profile, and linked agent summary.",
-    skills: "Choose which agents can see each installed skill.",
-    agents: "Manage the skills folder used by each local agent.",
-    remote: "Connect remote sources and remote machines from one place.",
-    sync: "Plan and run cache synchronization over SSH.",
+    overview: "Choose the source and target workflow you want to configure.",
+    "local-on-this-mac": "Use the local skills folder with agents installed on this Mac.",
+    "local-on-remote": "Use the local skills folder with agents installed on remote machines.",
+    "remote-source": "Pull a remote skills folder into a local cache.",
+    "remote-on-this-mac": "Use pulled remote skills with agents installed on this Mac.",
+    "skills-local": "Apply or sync skills from the local library.",
+    "skills-remote": "Pull and apply skills from the remote library cache.",
+    activity: "Remote operations, skipped conflicts, and exact affected paths.",
     advanced: "Agent-specific integrations and startup hook diagnostics.",
   }[page];
 }
 
-function remoteAgentDir(remoteEnv, agentId) {
-  return remoteEnv?.agents?.find((agent) => agent.agentId === agentId)?.skillsDir ?? "";
+function activeSourceKind(model) {
+  const activeId = model.dashboard?.config?.activeSourceProfileId;
+  return sourceProfiles(model).find((profile) => profile.sourceProfileId === activeId)?.kind;
+}
+
+function localEnvironmentConfig(model) {
+  return environmentGroups(model).find((environment) => environment.environmentId === "local");
 }
 
 function environmentGroups(model) {
   return model.dashboard?.config?.environments ?? [];
 }
 
-function allConfiguredAgents(model) {
-  return environmentGroups(model).flatMap((environment) =>
+function remoteEnvironments(model) {
+  return environmentGroups(model).filter((environment) => environment.kind === "remote");
+}
+
+function sourceProfiles(model) {
+  return model.dashboard?.config?.sourceProfiles ?? [];
+}
+
+function sourceProfileByKind(model, sourceKind) {
+  const activeId = model.dashboard?.config?.activeSourceProfileId;
+  const profiles = sourceProfiles(model).filter((profile) => profile.kind === sourceKind);
+  return profiles.find((profile) => profile.sourceProfileId === activeId) ?? profiles[0];
+}
+
+function sourceLibrary(model, sourceKind) {
+  const profile = sourceProfileByKind(model, sourceKind);
+  const sourceSkills = model.dashboard?.sourceSkills ?? [];
+  const fromDashboard =
+    sourceSkills.find((source) => source.sourceProfileId === profile?.sourceProfileId) ??
+    sourceSkills.find((source) => source.kind === sourceKind);
+  if (fromDashboard) {
+    return {
+      active: activeSourceKind(model) === sourceKind,
+      error: fromDashboard.error ?? null,
+      kind: sourceKind,
+      skills: fromDashboard.skills ?? [],
+      sourceProfileId: fromDashboard.sourceProfileId,
+      sourceRoot: fromDashboard.sourceRoot,
+    };
+  }
+
+  const sourceRoot =
+    sourceKind === "remote"
+      ? profile?.localCacheRoot
+      : profile?.sourceRoot ?? model.sourceRoot;
+
+  return {
+    active: activeSourceKind(model) === sourceKind,
+    error: profile ? null : "Not configured",
+    kind: sourceKind,
+    skills: activeSourceKind(model) === sourceKind ? model.skills : [],
+    sourceProfileId: profile?.sourceProfileId ?? "Not configured",
+    sourceRoot: sourceRoot ?? "",
+  };
+}
+
+function skillTargetEnvironments(model, sourceKind) {
+  const environments = environmentGroups(model);
+  if (sourceKind === "remote") {
+    return environments.filter((environment) => environment.environmentId === "local");
+  }
+  return environments;
+}
+
+function skillTargetAgents(model, sourceKind) {
+  return skillTargetEnvironments(model, sourceKind).flatMap((environment) =>
     (environment.agents ?? []).map((agent) => ({ environment, agent })),
   );
 }
@@ -619,7 +903,7 @@ function environmentTitle(environment) {
 function environmentSubtitle(environment) {
   if (environment.environmentId === "local") return "Agents installed on this machine.";
   const remote = environment.user && environment.host ? `${environment.user}@${environment.host}` : "Remote machine";
-  return `${remote} pulls from the configured cache.`;
+  return `${remote} uses links created inside its configured agent skills folders.`;
 }
 
 function agentLabel(agentId) {
@@ -635,7 +919,7 @@ function defaultRemoteAgentDir(agentId) {
 }
 
 function statusTone(status) {
-  if (status === "enabled") return "good";
-  if (status === "conflict" || status === "invalid") return "bad";
+  if (status === "enabled" || status === "applied") return "good";
+  if (status === "conflict" || status === "invalid" || status === "failed") return "bad";
   return "muted";
 }

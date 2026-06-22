@@ -8,19 +8,13 @@ export function bindView({ action, api, refresh, render, root, state }) {
     render();
   });
   bindAction(root, "select-skill", (event) => {
-    state.settingsPage = "skills";
+    state.settingsPage = event.currentTarget.dataset.page || "skills-local";
     state.selectedSkillId = event.currentTarget.dataset.skill;
     render();
   });
   bindAction(root, "back-to-skills", () => {
     state.selectedSkillId = null;
     render();
-  });
-  bindAction(root, "hide-window", () => {
-    void api.hideCurrentWindow();
-  });
-  bindAction(root, "open-settings", () => {
-    void api.openSettings();
   });
   bindAction(root, "reconcile-all", () => {
     action(() => api.reconcileAll());
@@ -72,6 +66,17 @@ export function bindView({ action, api, refresh, render, root, state }) {
         }),
       );
     });
+  });
+
+  root.querySelector('[data-form="local-source"]')?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    action(() =>
+      api.setLocalSource({
+        sourceProfileId: emptyToNull(form.get("sourceProfileId")),
+        sourceRoot: form.get("sourceRoot"),
+      }),
+    );
   });
 
   root.querySelector('[data-form="remote-source"]')?.addEventListener("submit", (event) => {

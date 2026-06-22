@@ -3,16 +3,14 @@ use std::process::Command;
 
 use serde::Serialize;
 use serde_json::{json, Value};
-use tauri::AppHandle;
-
 use skills_manager_core::agents::{AgentId, BUILTIN_AGENTS};
+use skills_manager_core::cache::CacheMarker;
 use skills_manager_core::config::{
     active_source_profile, config_path, environment, init_config_home, read_workspace_config,
     read_workspace_state, state_path, write_workspace_config, write_workspace_state,
 };
 use skills_manager_core::detect::detect_machine;
 use skills_manager_core::hook::hook_status;
-use skills_manager_core::cache::CacheMarker;
 use skills_manager_core::model::{
     AgentConfig, EnvironmentConfig, EnvironmentKind, LocalSourceProfile, RemoteSourceProfile,
     SourceProfile, SyncDirection, WorkspaceConfig,
@@ -29,9 +27,17 @@ use skills_manager_core::sync::{
     PushLocalToRemote,
 };
 
-use crate::tray;
-
 pub type CommandResult = Result<Value, CommandError>;
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SourceSkills {
+    source_profile_id: String,
+    kind: &'static str,
+    source_root: PathBuf,
+    skills: Vec<skills_manager_core::model::Skill>,
+    error: Option<String>,
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -69,6 +75,11 @@ pub fn load_dashboard(config_home: Option<String>) -> CommandResult {
             .as_ref()
             .and_then(|source_root| scan_source(source_root).ok())
             .unwrap_or_default();
+        let source_skills = config
+            .as_ref()
+            .map(scan_source_profiles)
+            .transpose()?
+            .unwrap_or_default();
         let mut statuses = Vec::new();
         if let Some(config) = &config {
             for env_config in &config.environments {
@@ -89,6 +100,7 @@ pub fn load_dashboard(config_home: Option<String>) -> CommandResult {
             "detection": detection,
             "sourceRoot": source_root,
             "skills": skills,
+            "sourceSkills": source_skills,
             "statuses": statuses,
             "hooks": hooks,
         }))
@@ -148,6 +160,39 @@ pub fn init_config(
 
         Ok(json!({
             "configHome": config_home,
+            "sourceRoot": source_root,
+            "repository": repository,
+            "config": config,
+        }))
+    })
+}
+
+#[tauri::command]
+pub fn set_local_source(
+    config_home: Option<String>,
+    source_profile_id: Option<String>,
+    source_root: String,
+) -> CommandResult {
+    handle(|| {
+        let config_home = config_home_path(config_home);
+        init_config_home(&config_home)?;
+        let path = config_path(&config_home);
+        let mut config = read_workspace_config(&path)?;
+        let source_profile_id = source_profile_id.unwrap_or_else(|| "local-personal".to_string());
+        let source_root = expand_path_from_cwd(Path::new(&source_root))?;
+        let repository = init_or_update_repository_metadata(&source_root, None)?;
+
+        upsert_source_profile(
+            &mut config,
+            SourceProfile::Local(LocalSourceProfile {
+                source_profile_id: source_profile_id.clone(),
+                source_root: source_root.clone(),
+            }),
+        );
+        config.active_source_profile_id = source_profile_id;
+        write_workspace_config(&path, &config)?;
+
+        Ok(json!({
             "sourceRoot": source_root,
             "repository": repository,
             "config": config,
@@ -232,7 +277,11 @@ pub fn set_skill_enabled(
 }
 
 #[tauri::command]
-pub fn reconcile(config_home: Option<String>, agent_id: Option<String>, plan: bool) -> CommandResult {
+pub fn reconcile(
+    config_home: Option<String>,
+    agent_id: Option<String>,
+    plan: bool,
+) -> CommandResult {
     handle(|| {
         let config_home = config_home_path(config_home);
         init_config_home(&config_home)?;
@@ -309,8 +358,7 @@ pub fn set_remote_source(
         let config_home = config_home_path(config_home);
         let path = config_path(&config_home);
         let mut config = read_workspace_config(&path)?;
-        let source_profile_id =
-            source_profile_id.unwrap_or_else(|| "remote-personal".to_string());
+        let source_profile_id = source_profile_id.unwrap_or_else(|| "remote-personal".to_string());
         let local_cache_root = expand_path_from_cwd(Path::new(&local_cache_root))?;
 
         upsert_source_profile(
@@ -458,7 +506,13 @@ pub fn remote_sync(
                 env_config
                     .remote_cache_root
                     .as_ref()
-                    .map(|remote_cache_root| plan_remote_links(env_config, remote_cache_root, &scan_source(&resolve_active_source_root(&config)?)?))
+                    .map(|remote_cache_root| {
+                        plan_remote_links(
+                            env_config,
+                            remote_cache_root,
+                            &scan_source(&resolve_active_source_root(&config)?)?,
+                        )
+                    })
                     .transpose()?
             } else {
                 None
@@ -541,26 +595,6 @@ pub fn remote_cli_status(config_home: Option<String>, environment_id: String) ->
     })
 }
 
-#[tauri::command]
-pub fn open_settings(app: AppHandle) -> CommandResult {
-    handle(|| {
-        tray::show_settings(&app).map_err(|err| {
-            skills_manager_core::Error::InvalidInput(format!("failed to show settings: {err}"))
-        })?;
-        Ok(json!({ "opened": "settings" }))
-    })
-}
-
-#[tauri::command]
-pub fn hide_current_window(window: tauri::WebviewWindow) -> CommandResult {
-    handle(|| {
-        window
-            .hide()
-            .map_err(|err| skills_manager_core::Error::InvalidInput(err.to_string()))?;
-        Ok(json!({ "hidden": window.label() }))
-    })
-}
-
 fn config_home_path(config_home: Option<String>) -> PathBuf {
     config_home
         .map(PathBuf::from)
@@ -573,6 +607,41 @@ fn resolve_active_source_root(config: &WorkspaceConfig) -> skills_manager_core::
         SourceProfile::Local(profile) => expand_path_from_cwd(&profile.source_root),
         SourceProfile::Remote(profile) => expand_path_from_cwd(&profile.local_cache_root),
     }
+}
+
+fn scan_source_profiles(
+    config: &WorkspaceConfig,
+) -> skills_manager_core::Result<Vec<SourceSkills>> {
+    config
+        .source_profiles
+        .iter()
+        .map(|profile| {
+            let (source_profile_id, kind, source_root) = match profile {
+                SourceProfile::Local(profile) => (
+                    profile.source_profile_id.clone(),
+                    "local",
+                    expand_path_from_cwd(&profile.source_root)?,
+                ),
+                SourceProfile::Remote(profile) => (
+                    profile.source_profile_id.clone(),
+                    "remote",
+                    expand_path_from_cwd(&profile.local_cache_root)?,
+                ),
+            };
+            let (skills, error) = match scan_source(&source_root) {
+                Ok(skills) => (skills, None),
+                Err(err) => (Vec::new(), Some(err.to_string())),
+            };
+
+            Ok(SourceSkills {
+                source_profile_id,
+                kind,
+                source_root,
+                skills,
+                error,
+            })
+        })
+        .collect()
 }
 
 fn ensure_environment<'a>(

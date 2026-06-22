@@ -12,18 +12,6 @@
   "app": {
     "windows": [
       {
-        "label": "panel",
-        "title": "Skills Manager",
-        "url": "index.html?view=panel",
-        "width": 380,
-        "height": 560,
-        "minWidth": 360,
-        "minHeight": 480,
-        "resizable": false,
-        "skipTaskbar": true,
-        "visible": false
-      },
-      {
         "label": "settings",
         "title": "Skills Manager Settings",
         "url": "index.html?view=settings",

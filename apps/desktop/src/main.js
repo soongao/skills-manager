@@ -1,25 +1,21 @@
 import "./styles.css";
 
-import { createDesktopApi, detectView } from "./desktop-api.js";
+import { createDesktopApi } from "./desktop-api.js";
 import { bindView } from "./events.js";
 import { createViewModel } from "./view-model.js";
-import { renderPanel } from "./views/panel.js";
 import { renderSettings } from "./views/settings.js";
 
 const app = document.querySelector("#app");
 const api = createDesktopApi();
-const view = detectView();
 
 const state = {
   dashboard: null,
   busy: false,
   error: null,
   lastRemoteSync: null,
-  settingsPage: "general",
+  settingsPage: "overview",
   selectedSkillId: null,
 };
-
-document.body.dataset.view = view;
 
 async function refresh() {
   state.busy = true;
@@ -45,6 +41,8 @@ async function action(fn) {
     const result = await fn();
     if (result?.sync || result?.plan || result?.remoteLink || result?.remoteLinkPlan) {
       state.lastRemoteSync = result;
+      state.settingsPage = "activity";
+      state.selectedSkillId = null;
     }
     state.dashboard = await api.loadDashboard();
   } catch (error) {
@@ -57,10 +55,7 @@ async function action(fn) {
 
 function render() {
   const model = createViewModel(state.dashboard);
-  app.innerHTML =
-    view === "settings"
-      ? renderSettings(model, state)
-      : renderPanel(model, state);
+  app.innerHTML = renderSettings(model, state);
 
   bindView({
     action,
