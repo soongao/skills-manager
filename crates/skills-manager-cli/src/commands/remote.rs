@@ -8,6 +8,8 @@ use skills_manager_core::config::{
 };
 use skills_manager_core::model::{SourceProfile, SyncDirection};
 use skills_manager_core::paths::expand_path_from_cwd;
+use skills_manager_core::remote_link::{execute_remote_link_plan, plan_remote_links};
+use skills_manager_core::scan::scan_source;
 use skills_manager_core::sync::{
     execute_sync_plan, plan_pull_remote_to_local, plan_push_local_to_remote, PullRemoteToLocal,
     PushLocalToRemote,
@@ -78,12 +80,35 @@ pub fn sync(args: &CliArgs, run: &mut RunContext) -> skills_manager_core::Result
     };
 
     if args.flag("plan") {
+        let remote_link_plan = if plan.direction == SyncDirection::PushLocalToRemote {
+            env_config
+                .remote_cache_root
+                .as_ref()
+                .map(|remote_cache_root| {
+                    let source_root = match source {
+                        SourceProfile::Local(local) => expand_path_from_cwd(&local.source_root)?,
+                        SourceProfile::Remote(_) => {
+                            return Err(skills_manager_core::Error::InvalidInput(
+                                "remote link plan requires a local active source".to_string(),
+                            ));
+                        }
+                    };
+                    let skills = scan_source(&source_root)?;
+                    plan_remote_links(env_config, remote_cache_root, &skills)
+                })
+                .transpose()?
+        } else {
+            None
+        };
         run.add_action(json!({
             "type": "sync-plan",
             "status": "planned",
             "direction": plan.direction,
         }));
-        return Ok(json!({ "plan": plan }));
+        return Ok(json!({
+            "plan": plan,
+            "remoteLinkPlan": remote_link_plan,
+        }));
     }
 
     let report = execute_sync_plan(&plan)?;
@@ -95,7 +120,44 @@ pub fn sync(args: &CliArgs, run: &mut RunContext) -> skills_manager_core::Result
             "message": action.message,
         }));
     }
-    Ok(json!({ "sync": report }))
+
+    let remote_link = if report.plan.direction == SyncDirection::PushLocalToRemote {
+        let remote_cache_root = env_config.remote_cache_root.clone().ok_or_else(|| {
+            skills_manager_core::Error::InvalidInput(
+                "remoteCacheRoot is required for push-local-to-remote".to_string(),
+            )
+        })?;
+        let source_root = match source {
+            SourceProfile::Local(local) => expand_path_from_cwd(&local.source_root)?,
+            SourceProfile::Remote(_) => {
+                return Err(skills_manager_core::Error::InvalidInput(
+                    "remote link requires a local active source".to_string(),
+                ));
+            }
+        };
+        let skills = scan_source(&source_root)?;
+        let link_plan = plan_remote_links(env_config, &remote_cache_root, &skills)?;
+        let link_report = execute_remote_link_plan(&link_plan)?;
+        for action in &link_report.actions {
+            run.add_action(json!({
+                "type": "remote-link",
+                "status": action.status,
+                "agentId": action.agent_id,
+                "skillId": action.skill_id,
+                "sourcePath": action.source_path,
+                "targetPath": action.target_path,
+                "message": action.message,
+            }));
+        }
+        Some(link_report)
+    } else {
+        None
+    };
+
+    Ok(json!({
+        "sync": report,
+        "remoteLink": remote_link,
+    }))
 }
 
 pub fn cli_status(args: &CliArgs) -> skills_manager_core::Result<Value> {

@@ -8,6 +8,7 @@ pub mod model;
 pub mod opencode;
 pub mod paths;
 pub mod reconcile;
+pub mod remote_link;
 pub mod repository;
 pub mod scan;
 pub mod status;

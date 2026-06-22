@@ -12,6 +12,7 @@ pub struct SyncPlan {
     pub direction: SyncDirection,
     pub delete_extraneous: bool,
     pub preflight: Vec<PreflightCheck>,
+    pub prepare: Vec<PrepareStep>,
     pub commands: Vec<RsyncCommand>,
 }
 
@@ -27,6 +28,19 @@ pub enum PreflightCheck {
         user: String,
         cache_root: PathBuf,
         marker: CacheMarker,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum PrepareStep {
+    LocalMkdir {
+        paths: Vec<PathBuf>,
+    },
+    RemoteMkdir {
+        host: String,
+        user: String,
+        paths: Vec<PathBuf>,
     },
 }
 
@@ -109,6 +123,12 @@ pub fn plan_pull_remote_to_local(input: &PullRemoteToLocal) -> Result<SyncPlan> 
     Ok(build_rsync_plan(
         SyncDirection::PullRemoteToLocal,
         preflight,
+        vec![PrepareStep::LocalMkdir {
+            paths: vec![
+                local_skills_path(&input.local_cache_root),
+                local_repository_dir(&input.local_cache_root),
+            ],
+        }],
         vec![
             build_rsync_command(skills_source, skills_destination, input.delete_extraneous),
             build_rsync_command(repo_source, repo_destination, false),
@@ -148,6 +168,14 @@ pub fn plan_push_local_to_remote(input: &PushLocalToRemote) -> SyncPlan {
     build_rsync_plan(
         SyncDirection::PushLocalToRemote,
         preflight,
+        vec![PrepareStep::RemoteMkdir {
+            host: input.host.clone(),
+            user: input.user.clone(),
+            paths: vec![
+                remote_skills_path_buf(&input.remote_cache_root),
+                remote_repository_dir(&input.remote_cache_root),
+            ],
+        }],
         vec![
             build_rsync_command(skills_source, skills_destination, input.delete_extraneous),
             build_rsync_command(repo_source, repo_destination, false),
@@ -166,6 +194,16 @@ pub fn execute_sync_plan(plan: &SyncPlan) -> Result<SyncExecutionReport> {
             status: "applied".to_string(),
             command: None,
             message: Some(preflight_message(check)),
+        });
+    }
+
+    for step in &plan.prepare {
+        run_prepare(step)?;
+        actions.push(SyncExecutionAction {
+            kind: "prepare".to_string(),
+            status: "applied".to_string(),
+            command: Some(prepare_command_display(step)),
+            message: Some(prepare_message(step)),
         });
     }
 
@@ -216,6 +254,42 @@ pub fn run_preflight(check: &PreflightCheck) -> Result<()> {
             cache_root,
             marker,
         } => verify_remote_cache_marker(host, user, cache_root, marker),
+    }
+}
+
+pub fn run_prepare(step: &PrepareStep) -> Result<()> {
+    match step {
+        PrepareStep::LocalMkdir { paths } => {
+            for path in paths {
+                std::fs::create_dir_all(path).map_err(|err| {
+                    Error::io(format!("failed to create {}", path.display()), err)
+                })?;
+            }
+            Ok(())
+        }
+        PrepareStep::RemoteMkdir { host, user, paths } => {
+            let remote = format!("{user}@{host}");
+            let script = remote_mkdir_script(paths);
+            let mut command = Command::new("ssh");
+            command.arg(&remote).arg(script);
+            let output = command.output().map_err(|err| {
+                if err.kind() == std::io::ErrorKind::NotFound {
+                    Error::CommandUnavailable("ssh".to_string())
+                } else {
+                    Error::io("failed to execute ssh", err)
+                }
+            })?;
+
+            if output.status.success() {
+                return Ok(());
+            }
+
+            Err(Error::CommandFailed {
+                program: "ssh".to_string(),
+                status: output.status.code(),
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            })
+        }
     }
 }
 
@@ -277,6 +351,7 @@ pub fn verify_remote_cache_marker(
 fn build_rsync_plan(
     direction: SyncDirection,
     preflight: Vec<PreflightCheck>,
+    prepare: Vec<PrepareStep>,
     commands: Vec<RsyncCommand>,
     delete_extraneous: bool,
 ) -> SyncPlan {
@@ -284,6 +359,7 @@ fn build_rsync_plan(
         direction,
         delete_extraneous,
         preflight,
+        prepare,
         commands,
     }
 }
@@ -326,6 +402,68 @@ fn preflight_message(check: &PreflightCheck) -> String {
     }
 }
 
+fn prepare_message(step: &PrepareStep) -> String {
+    match step {
+        PrepareStep::LocalMkdir { paths } => format!(
+            "created local directories {}",
+            paths
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        PrepareStep::RemoteMkdir { host, user, paths } => format!(
+            "created remote directories on {}@{}: {}",
+            user,
+            host,
+            paths
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+fn prepare_command_display(step: &PrepareStep) -> Vec<String> {
+    match step {
+        PrepareStep::LocalMkdir { paths } => {
+            let mut command = vec!["mkdir".to_string(), "-p".to_string()];
+            command.extend(paths.iter().map(|path| path.display().to_string()));
+            command
+        }
+        PrepareStep::RemoteMkdir { host, user, paths } => {
+            let mut command = vec![
+                "ssh".to_string(),
+                format!("{user}@{host}"),
+                "mkdir".to_string(),
+                "-p".to_string(),
+            ];
+            command.extend(paths.iter().map(|path| path.display().to_string()));
+            command
+        }
+    }
+}
+
+fn remote_mkdir_script(paths: &[PathBuf]) -> String {
+    let mut script = String::from("mkdir -p --");
+    for path in paths {
+        script.push(' ');
+        script.push_str(&shell_quote(&path.display().to_string()));
+    }
+    script
+}
+
+fn shell_quote(value: &str) -> String {
+    if let Some(rest) = value.strip_prefix("~/") {
+        return format!("$HOME/{quoted}", quoted = shell_quote(rest));
+    }
+    if value == "~" {
+        return "$HOME".to_string();
+    }
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
 fn local_skills_path(root: &Path) -> PathBuf {
     root.join("skills")
 }
@@ -334,12 +472,24 @@ fn remote_skills_path(root: &Path) -> String {
     format!("{}/skills", root.display())
 }
 
+fn remote_skills_path_buf(root: &Path) -> PathBuf {
+    root.join("skills")
+}
+
 fn local_repository_path(root: &Path) -> PathBuf {
     root.join(".skills-manager").join("repository.json")
 }
 
+fn local_repository_dir(root: &Path) -> PathBuf {
+    root.join(".skills-manager")
+}
+
 fn remote_repository_path(root: &Path) -> String {
     format!("{}/.skills-manager/repository.json", root.display())
+}
+
+fn remote_repository_dir(root: &Path) -> PathBuf {
+    root.join(".skills-manager")
 }
 
 #[cfg(test)]
@@ -364,7 +514,15 @@ mod tests {
 
         assert!(plan_pull_remote_to_local(&input).is_err());
         init_cache_marker(&cache_root, &marker).unwrap();
-        assert!(plan_pull_remote_to_local(&input).is_ok());
+        let plan = plan_pull_remote_to_local(&input).unwrap();
+        assert_eq!(plan.prepare.len(), 1);
+        match &plan.prepare[0] {
+            PrepareStep::LocalMkdir { paths } => {
+                assert!(paths.contains(&cache_root.join("skills")));
+                assert!(paths.contains(&cache_root.join(".skills-manager")));
+            }
+            _ => panic!("expected local mkdir"),
+        }
     }
 
     #[test]
@@ -381,10 +539,33 @@ mod tests {
         let plan = plan_push_local_to_remote(&input);
         assert_eq!(plan.direction, SyncDirection::PushLocalToRemote);
         assert_eq!(plan.preflight.len(), 1);
+        assert_eq!(plan.prepare.len(), 1);
+        match &plan.prepare[0] {
+            PrepareStep::RemoteMkdir { paths, .. } => {
+                assert!(paths.contains(&PathBuf::from("~/.skills-manager/cache/personal/skills")));
+                assert!(paths.contains(&PathBuf::from(
+                    "~/.skills-manager/cache/personal/.skills-manager"
+                )));
+            }
+            _ => panic!("expected remote mkdir"),
+        }
         assert_eq!(plan.commands.len(), 2);
         assert!(plan.commands[0].args.iter().any(|arg| arg == "--delete"));
         assert!(!plan.commands[1].args.iter().any(|arg| arg == "--delete"));
         assert_eq!(plan.commands[0].source, "/Users/alice/skills/skills/");
+    }
+
+    #[test]
+    fn remote_mkdir_script_uses_recursive_mkdir_and_preserves_home_expansion() {
+        let script = remote_mkdir_script(&[
+            PathBuf::from("~/.skills-manager/cache/personal/skills"),
+            PathBuf::from("/home/alice/has space/.skills-manager"),
+        ]);
+
+        assert_eq!(
+            script,
+            "mkdir -p -- $HOME/'.skills-manager/cache/personal/skills' '/home/alice/has space/.skills-manager'"
+        );
     }
 
     fn test_dir(name: &str) -> std::path::PathBuf {

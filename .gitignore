@@ -37,6 +37,9 @@ node_modules/
 *.swp
 *.swo
 
+# Accidental local-home paths created by unexpanded "~"
+**/~/
+
 # Logs and temporary files
 *.log
 tmp/

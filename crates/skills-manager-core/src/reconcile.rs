@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 use crate::agents::AgentId;
 use crate::config::{ManagedLink, WorkspaceState};
 use crate::error::{Error, Result};
-use crate::model::{EnvironmentConfig, Skill};
+use crate::model::{EnvironmentConfig, EnvironmentKind, Skill};
+use crate::paths::expand_path_from_cwd;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -109,7 +110,8 @@ pub fn reconcile_agent_with_state(
         });
     }
 
-    ensure_skills_dir(&agent.skills_dir, mode)?;
+    let skills_dir = runtime_skills_dir(env_config, &agent.skills_dir)?;
+    ensure_skills_dir(&skills_dir, mode)?;
 
     let skills_by_id: HashMap<&str, &Skill> = skills
         .iter()
@@ -118,7 +120,7 @@ pub fn reconcile_agent_with_state(
 
     let mut actions = Vec::new();
     for skill_id in &agent.enabled_skill_ids {
-        let target_path = agent.skills_dir.join(skill_id);
+        let target_path = skills_dir.join(skill_id);
         let Some(skill) = skills_by_id.get(skill_id.as_str()) else {
             actions.push(ReconcileAction {
                 kind: ActionKind::Conflict,
@@ -154,11 +156,7 @@ pub fn reconcile_agent_with_state(
             continue;
         }
         actions.push(reconcile_disabled_managed_skill(
-            &env_config.environment_id,
-            agent_id,
-            &link,
-            mode,
-            state,
+            env_config, agent_id, &link, mode, state,
         )?);
     }
 
@@ -182,6 +180,14 @@ fn ensure_skills_dir(path: &Path, mode: ReconcileMode) -> Result<()> {
             .map_err(|err| Error::io(format!("failed to create {}", path.display()), err))?;
     }
     Ok(())
+}
+
+fn runtime_skills_dir(env_config: &EnvironmentConfig, path: &Path) -> Result<PathBuf> {
+    if env_config.kind != EnvironmentKind::Local {
+        return Ok(path.to_path_buf());
+    }
+
+    expand_path_from_cwd(path)
 }
 
 fn reconcile_enabled_skill(
@@ -280,54 +286,56 @@ fn reconcile_enabled_skill(
 }
 
 fn reconcile_disabled_managed_skill(
-    environment_id: &str,
+    env_config: &EnvironmentConfig,
     agent_id: AgentId,
     link: &ManagedLink,
     mode: ReconcileMode,
     state: &mut WorkspaceState,
 ) -> Result<ReconcileAction> {
-    match fs::symlink_metadata(&link.target_path) {
+    let target_path = runtime_managed_link_path(env_config, &link.target_path)?;
+    let source_path = runtime_managed_link_path(env_config, &link.source_path)?;
+
+    match fs::symlink_metadata(&target_path) {
         Ok(metadata) => {
             if !metadata.file_type().is_symlink() {
                 return Ok(ReconcileAction {
                     kind: ActionKind::Conflict,
                     status: ActionStatus::Conflict,
-                    environment_id: environment_id.to_string(),
+                    environment_id: env_config.environment_id.clone(),
                     agent_id,
                     skill_id: link.skill_id.clone(),
-                    source_path: Some(link.source_path.clone()),
-                    target_path: link.target_path.clone(),
+                    source_path: Some(source_path),
+                    target_path,
                     message: Some("managed target is no longer a symlink".to_string()),
                 });
             }
 
-            let current_target = fs::read_link(&link.target_path).map_err(|err| {
-                Error::io(
-                    format!("failed to read {}", link.target_path.display()),
-                    err,
-                )
+            let current_target = fs::read_link(&target_path).map_err(|err| {
+                Error::io(format!("failed to read {}", target_path.display()), err)
             })?;
-            if current_target != link.source_path {
+            if current_target != source_path {
                 return Ok(ReconcileAction {
                     kind: ActionKind::Conflict,
                     status: ActionStatus::Conflict,
-                    environment_id: environment_id.to_string(),
+                    environment_id: env_config.environment_id.clone(),
                     agent_id,
                     skill_id: link.skill_id.clone(),
-                    source_path: Some(link.source_path.clone()),
-                    target_path: link.target_path.clone(),
+                    source_path: Some(source_path),
+                    target_path,
                     message: Some("managed target points elsewhere".to_string()),
                 });
             }
 
             if mode == ReconcileMode::Apply {
-                fs::remove_file(&link.target_path).map_err(|err| {
-                    Error::io(
-                        format!("failed to remove {}", link.target_path.display()),
-                        err,
-                    )
+                fs::remove_file(&target_path).map_err(|err| {
+                    Error::io(format!("failed to remove {}", target_path.display()), err)
                 })?;
-                unregister_managed_link(state, environment_id, agent_id, &link.skill_id);
+                unregister_managed_link(
+                    state,
+                    &env_config.environment_id,
+                    agent_id,
+                    &link.skill_id,
+                );
             }
 
             Ok(ReconcileAction {
@@ -337,32 +345,40 @@ fn reconcile_disabled_managed_skill(
                 } else {
                     ActionStatus::Planned
                 },
-                environment_id: environment_id.to_string(),
+                environment_id: env_config.environment_id.clone(),
                 agent_id,
                 skill_id: link.skill_id.clone(),
-                source_path: Some(link.source_path.clone()),
-                target_path: link.target_path.clone(),
+                source_path: Some(source_path),
+                target_path,
                 message: None,
             })
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            unregister_managed_link(state, environment_id, agent_id, &link.skill_id);
+            unregister_managed_link(state, &env_config.environment_id, agent_id, &link.skill_id);
             Ok(ReconcileAction {
                 kind: ActionKind::RemoveSymlink,
                 status: ActionStatus::Skipped,
-                environment_id: environment_id.to_string(),
+                environment_id: env_config.environment_id.clone(),
                 agent_id,
                 skill_id: link.skill_id.clone(),
-                source_path: Some(link.source_path.clone()),
-                target_path: link.target_path.clone(),
+                source_path: Some(source_path),
+                target_path,
                 message: Some("managed target already missing".to_string()),
             })
         }
         Err(err) => Err(Error::io(
-            format!("failed to inspect {}", link.target_path.display()),
+            format!("failed to inspect {}", target_path.display()),
             err,
         )),
     }
+}
+
+fn runtime_managed_link_path(env_config: &EnvironmentConfig, path: &Path) -> Result<PathBuf> {
+    if env_config.kind != EnvironmentKind::Local {
+        return Ok(path.to_path_buf());
+    }
+
+    expand_path_from_cwd(path)
 }
 
 fn register_managed_link(

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use skills_manager_core::paths::default_config_home;
+use skills_manager_core::paths::{default_config_home, expand_path_from_cwd};
 
 #[derive(Clone, Debug)]
 pub struct CliArgs {
@@ -61,6 +61,7 @@ impl CliArgs {
     pub fn config_home(&self) -> PathBuf {
         self.option("config-home")
             .map(PathBuf::from)
+            .map(|path| expand_path_from_cwd(&path).unwrap_or(path))
             .unwrap_or_else(default_config_home)
     }
 }

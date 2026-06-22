@@ -90,6 +90,7 @@ pub fn set_remote_source(
         "local-cache-root",
         "config set-remote-source --local-cache-root <path>",
     )?;
+    let local_cache_root = expand_path_from_cwd(&local_cache_root)?;
 
     upsert_source_profile(
         &mut config,
@@ -126,6 +127,7 @@ pub fn set_agent(args: &CliArgs, run: &mut RunContext) -> skills_manager_core::R
         "skills-dir",
         "config set-agent --agent <agent> --skills-dir <path>",
     )?;
+    let skills_dir = expand_path_from_cwd(&skills_dir)?;
     let managed = !args.flag("unmanaged");
     let source_root = resolve_active_source_root(&config)?;
     let skill_ids = scan_source(&source_root)

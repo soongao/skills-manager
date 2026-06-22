@@ -7,31 +7,36 @@ trap 'rm -rf "$TMP_ROOT"' EXIT
 
 SOURCE_ROOT="$TMP_ROOT/source"
 CONFIG_HOME="$TMP_ROOT/config"
-CLAUDE_SKILLS_DIR="$TMP_ROOT/claude-skills"
+TEST_HOME="$TMP_ROOT/home"
+CLAUDE_SKILLS_DIR="$TEST_HOME/claude-skills"
 
-mkdir -p "$SOURCE_ROOT/skills/design-clarifier" "$SOURCE_ROOT/skills/review-helper" "$CLAUDE_SKILLS_DIR"
+mkdir -p "$SOURCE_ROOT/skills/design-clarifier" "$SOURCE_ROOT/skills/review-helper" "$TEST_HOME"
 printf '# Design Clarifier\n' > "$SOURCE_ROOT/skills/design-clarifier/SKILL.md"
 printf '# Review Helper\n' > "$SOURCE_ROOT/skills/review-helper/SKILL.md"
 
 cd "$ROOT_DIR"
 
-cargo run -p skills-manager-cli -- init-config \
+cargo build -p skills-manager-cli >/dev/null
+CLI_BIN="$ROOT_DIR/target/debug/skills-manager"
+
+HOME="$TEST_HOME" "$CLI_BIN" init-config \
   --source-root "$SOURCE_ROOT" \
   --config-home "$CONFIG_HOME" \
-  --claude-code-skills-dir "$CLAUDE_SKILLS_DIR" \
+  --claude-code-skills-dir '~/claude-skills' \
   --json >/dev/null
 
-cargo run -p skills-manager-cli -- status \
+HOME="$TEST_HOME" "$CLI_BIN" status \
   --config-home "$CONFIG_HOME" \
   --agent claude-code \
   --json >/dev/null
 
-cargo run -p skills-manager-cli -- reconcile \
+HOME="$TEST_HOME" "$CLI_BIN" reconcile \
   --config-home "$CONFIG_HOME" \
   --agent claude-code \
   --json >/dev/null
 
 test -L "$CLAUDE_SKILLS_DIR/design-clarifier"
 test -L "$CLAUDE_SKILLS_DIR/review-helper"
+test ! -e "$ROOT_DIR/~"
 
 echo "smoke ok"

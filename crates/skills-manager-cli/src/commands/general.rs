@@ -54,27 +54,23 @@ pub fn init_config(args: &CliArgs, run: &mut RunContext) -> skills_manager_core:
         .map(|skill| skill.skill_id.clone())
         .collect::<Vec<_>>();
 
-    let agents = BUILTIN_AGENTS
-        .into_iter()
-        .filter_map(|agent_id| {
+    let mut agents = Vec::new();
+    for agent_id in BUILTIN_AGENTS {
+        let skills_dir =
             if let Some(skills_dir) = args.option(&format!("{}-skills-dir", agent_id.as_str())) {
-                return Some(AgentConfig {
-                    agent_id,
-                    managed: true,
-                    skills_dir: PathBuf::from(skills_dir),
-                    enabled_skill_ids: enabled_skill_ids.clone(),
-                });
-            }
-            skills_manager_core::detect::recommended_skills_dir(agent_id).map(|skills_dir| {
-                AgentConfig {
-                    agent_id,
-                    managed: true,
-                    skills_dir,
-                    enabled_skill_ids: enabled_skill_ids.clone(),
-                }
-            })
-        })
-        .collect::<Vec<_>>();
+                Some(expand_path_from_cwd(Path::new(&skills_dir))?)
+            } else {
+                skills_manager_core::detect::recommended_skills_dir(agent_id)
+            };
+        if let Some(skills_dir) = skills_dir {
+            agents.push(AgentConfig {
+                agent_id,
+                managed: true,
+                skills_dir,
+                enabled_skill_ids: enabled_skill_ids.clone(),
+            });
+        }
+    }
 
     let source_profile_id = args
         .option("source-profile-id")
@@ -115,7 +111,10 @@ pub fn opencode_ensure_path(
     } else {
         active_source_root(args)?.join("skills")
     };
-    let config_path = args.option("config-path").map(PathBuf::from);
+    let config_path = args
+        .option("config-path")
+        .map(|path| expand_path_from_cwd(Path::new(&path)))
+        .transpose()?;
     let report = ensure_opencode_skill_path(config_path, &skills_root, &run.run_id)?;
     run.add_action(json!({
         "type": "opencode-skill-path",
@@ -373,13 +372,13 @@ fn status_legacy(args: &CliArgs, source_root: PathBuf) -> skills_manager_core::R
         )?)?
     };
     let skills_dir = if let Some(skills_dir) = args.option("skills-dir") {
-        PathBuf::from(skills_dir)
+        expand_path_from_cwd(Path::new(&skills_dir))?
     } else {
-        PathBuf::from(required_positional(
+        expand_path_from_cwd(Path::new(required_positional(
             args,
             3,
             "status <source-root> <agent> <skills-dir>",
-        )?)
+        )?))?
     };
     let skills = scan_source(&source_root)?;
     let enabled_skill_ids = skills.iter().map(|skill| skill.skill_id.clone()).collect();
@@ -417,13 +416,13 @@ fn reconcile_legacy(
         )?)?
     };
     let skills_dir = if let Some(skills_dir) = args.option("skills-dir") {
-        PathBuf::from(skills_dir)
+        expand_path_from_cwd(Path::new(&skills_dir))?
     } else {
-        PathBuf::from(required_positional(
+        expand_path_from_cwd(Path::new(required_positional(
             args,
             3,
             "reconcile <source-root> <agent> <skills-dir>",
-        )?)
+        )?))?
     };
     let skills = scan_source(&source_root)?;
     let enabled_skill_ids = skills.iter().map(|skill| skill.skill_id.clone()).collect();

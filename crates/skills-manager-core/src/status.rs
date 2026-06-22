@@ -3,7 +3,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::agents::AgentId;
-use crate::model::{EnvironmentConfig, Skill};
+use crate::model::{EnvironmentConfig, EnvironmentKind, Skill};
+use crate::paths::expand_path_from_cwd;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -60,7 +61,8 @@ pub fn compute_agent_statuses(
             .enabled_skill_ids
             .iter()
             .any(|id| id == &skill.skill_id);
-        let target_path = agent.skills_dir.join(&skill.skill_id);
+        let skills_dir = display_skills_dir(env_config, &agent.skills_dir);
+        let target_path = skills_dir.join(&skill.skill_id);
         rows.push(compute_one_status(
             &env_config.environment_id,
             agent_id,
@@ -75,7 +77,8 @@ pub fn compute_agent_statuses(
         if skills_by_id.contains_key(skill_id.as_str()) {
             continue;
         }
-        let target_path = agent.skills_dir.join(skill_id);
+        let skills_dir = display_skills_dir(env_config, &agent.skills_dir);
+        let target_path = skills_dir.join(skill_id);
         rows.push(SkillAgentStatus {
             environment_id: env_config.environment_id.clone(),
             agent_id,
@@ -89,6 +92,52 @@ pub fn compute_agent_statuses(
 
     rows.sort_by(|left, right| left.skill_id.cmp(&right.skill_id));
     rows
+}
+
+fn display_skills_dir(env_config: &EnvironmentConfig, path: &std::path::Path) -> PathBuf {
+    if env_config.kind != EnvironmentKind::Local {
+        return path.to_path_buf();
+    }
+
+    expand_path_from_cwd(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agents::AgentId;
+    use crate::model::AgentConfig;
+    use crate::paths::home_dir;
+
+    #[test]
+    fn expands_local_home_prefixed_skills_dir() {
+        let Some(home) = home_dir() else {
+            return;
+        };
+        let source = home.join(".skills-manager-test/source/skills/design-clarifier");
+        let env = EnvironmentConfig::local(
+            "local",
+            vec![AgentConfig {
+                agent_id: AgentId::Codex,
+                managed: true,
+                skills_dir: PathBuf::from("~/.codex/skills"),
+                enabled_skill_ids: vec!["design-clarifier".to_string()],
+            }],
+        );
+        let statuses = compute_agent_statuses(
+            &env,
+            AgentId::Codex,
+            &[Skill {
+                skill_id: "design-clarifier".to_string(),
+                path: source,
+            }],
+        );
+
+        assert_eq!(
+            statuses[0].target_path,
+            home.join(".codex/skills/design-clarifier")
+        );
+    }
 }
 
 fn compute_one_status(
@@ -108,6 +157,18 @@ fn compute_one_status(
             source_path,
             target_path,
             message: None,
+        };
+    }
+
+    if environment_id != "local" {
+        return SkillAgentStatus {
+            environment_id: environment_id.to_string(),
+            agent_id,
+            skill_id: skill_id.to_string(),
+            status: SkillStatus::Pending,
+            source_path,
+            target_path,
+            message: Some("remote target will be linked on the remote machine".to_string()),
         };
     }
 

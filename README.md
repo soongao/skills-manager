@@ -2,7 +2,8 @@
 
 Skills Manager manages one active skills source across Codex, Claude Code, and OpenCode.
 
-The MVP is implemented as a Rust core, a CLI, and a Tauri desktop shell. The desktop app reuses the
+The MVP is implemented as a Rust core, a CLI, and a Tauri desktop shell. The desktop app runs as a
+menu bar / tray utility with a compact status panel and a separate settings window. It reuses the
 same core logic for source scanning, config, status, reconcile, detection, hook status, and OpenCode
 native `skills.paths` integration.
 
@@ -45,7 +46,8 @@ Run the CLI through the project wrapper:
 ./scripts/cli.sh help
 ```
 
-Run the desktop app:
+Run the desktop app. It starts in the background; use the menu bar / tray icon to open the panel or
+settings window.
 
 ```bash
 ./scripts/dev-desktop.sh
@@ -110,7 +112,10 @@ so the symlink fallback can be used instead.
 
 ## Remote Sync
 
-The remote MVP uses `sync-cache`, not sshfs:
+Remote mode uses `sync-cache`, not sshfs. For `push-local-to-remote`, Skills Manager
+first syncs this Mac's source into the remote cache, then connects over SSH and links
+the enabled skills into each configured remote agent folder. Existing non-managed
+targets are skipped as conflicts and reported to the user.
 
 ```bash
 ./scripts/cli.sh remote sync --environment devbox --direction push-local-to-remote --plan --json

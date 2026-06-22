@@ -37,11 +37,19 @@
 - Implemented JSON Lines logs and per-run JSON records under the configured Skills Manager home.
 - Added a Tauri desktop app under `apps/desktop`.
 - Desktop app currently supports:
+  - menu bar / tray background mode
+  - compact status panel
+  - separate full settings window
+  - close-to-hide window behavior
   - initialize source/config
   - view source, discovered skills, agents, statuses, hooks, and dependency detection
   - edit local agent skill directories
   - toggle skill enablement per local agent
   - run local reconcile
+  - configure remote source pull mode
+  - configure remote environment push mode
+  - plan and run remote cache sync from settings
+  - test remote `skills-manager` CLI availability over SSH
   - call OpenCode native `skills.paths` integration from the Rust backend
 - Added project shell wrappers:
   - `./scripts/cli.sh` for CLI execution
@@ -100,9 +108,10 @@ The following commands have been run successfully:
 ```bash
 ./scripts/check.sh
 ./scripts/smoke.sh
+./scripts/dev-desktop.sh
 ```
 
-Current test result: 12 unit tests passed.
+Current test result: 13 unit tests passed.
 
 An end-to-end smoke test was also run using a temporary source root, temporary config home, and
 explicit Claude Code skills directory under `/private/tmp`. It verified:
@@ -120,6 +129,5 @@ explicit Claude Code skills directory under `/private/tmp`. It verified:
 ## Remaining Work
 
 - Add richer UI-facing issue aggregation.
-- Expand desktop UI for remote environment editing and sync execution.
 - Add richer desktop logs/runs viewer.
 - Add safe hook installer implementations only after concrete agent/version timing verification.
