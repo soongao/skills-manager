@@ -1,0 +1,46 @@
+# Build artifacts
+/target/
+**/target/
+/build/
+/out/
+dist/
+.vite/
+
+# Tauri generated artifacts
+apps/desktop/src-tauri/gen/
+*.app/
+*.dmg
+*.pkg
+*.deb
+*.rpm
+*.msi
+*.exe
+*.pdb
+*.dSYM/
+
+# Rust compiler byproducts
+*.rlib
+*.rmeta
+*.profraw
+*.profdata
+
+# JavaScript dependencies and caches
+node_modules/
+.npm/
+.pnpm-store/
+
+# Local environment and editor state
+.env
+.env.*
+!.env.example
+.DS_Store
+*.swp
+*.swo
+
+# Logs and temporary files
+*.log
+tmp/
+temp/
+
+# Skills Manager local runtime state
+.skills-manager/
